@@ -1,0 +1,80 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# libraries
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(hms)
+library(lubridate)
+library(modelr)
+library(caret)
+library(broom)
+library(leaps)
+library(glmulti)
+library(tidyverse)
+library(pROC)
+```
+
+# Read data
+
+```{r}
+flights_joined_alt <- read_csv(here::here("clean_data/flights_clean_joined.csv"))
+```
+
+```{r}
+flights_joined_alt <- flights_joined_alt %>% 
+  mutate(dep_hr = as_hms(round_date(lubridate::as_datetime(sched_dep_time), "hour")),
+         time_cat = as.numeric(dep_hr),
+         time_cat = case_when(
+           time_cat < 28800 ~ "Morning",
+           time_cat < 57600 ~ "Day",
+           TRUE ~ "Evening"
+         )
+         )
+```
+
+```{r}
+flights_model_data <- flights_joined_alt %>% 
+  filter(origin == "LGA") %>% 
+  filter(cancelled_flight == F) %>% 
+  select(-year, -day, -dep_time, -arr_time, -sched_arr_time, -arr_delay, -carrier, -flight, -tailnum, -origin, -distance, -hour, -minute, -time_hour, -cancelled_flight, -wind_dir, -model, -dest, -dep_delay, -engines, -engine, -type, -flight_duration, -dep_hr, -sched_dep_time, -date, -delayed_flight_over30) %>% 
+  select(delayed_flight, everything()) %>% 
+  mutate(across(where(is.character), as.factor),
+         month = as.factor(month)) %>% 
+  drop_na() %>%
+  group_by(name) %>% 
+  mutate(prev_flight_delayed = if_else(lag(delayed_flight) == TRUE, TRUE, FALSE)) %>% 
+  drop_na()
+```
+
+```{r}
+n_data <- nrow(flights_model_data)
+
+test_index <- sample(1:n_data, size = n_data * 0.2)
+
+test <- flights_model_data %>%  slice(test_index)
+
+train <- flights_model_data %>% slice(-test_index)
+```
+
+```{r}
+glmulti_search_all_mains <- glmulti(
+  delayed_flight ~ ., 
+  data = train,
+  level = 1,
+  minsize = 5,
+  maxsize = 5,
+  method = "g",            
+  crit = "bic",            
+  confsetsize = 10,        
+  plotty = F, 
+  report = T,              
+  fitfunction = "glm",    
+  family = binomial(link = "logit")) 
+summary(glmulti_search_all_mains)
+```
+

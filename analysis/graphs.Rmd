@@ -1,0 +1,131 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(hms)
+library(lubridate)
+```
+
+# Read data
+
+```{r}
+flights_joined_analysis <- read_csv(here::here("clean_data/flights_clean_joined_airports.csv")) 
+
+```
+
+
+# Month
+
+```{r}
+flights_joined_analysis %>%
+  filter(origin == "EWR") %>% 
+  group_by(month) %>% 
+  summarise(pc_delayed = sum(delayed_flight)/n(),
+            pc_delayed30 = sum(delayed_flight_over30)/n(),
+            pc_cancelled = sum(cancelled_flight)/n(),
+            total_flights = n()) %>%
+  mutate(month = as.factor(month)) %>% 
+  ggplot(aes(x = month, y = pc_delayed)) +
+  geom_col()+
+  jamie_theme +
+  labs(title = ("Percentage of flights that were delayed by month, 2017"), x = "Month", y = "Delayed flights %")
+```
+
+```{r}
+ewr_delay = c(0.58, 0.74, 0.73)
+jfk_delay = c(0.57, 0.69, 0.69)
+lga_delay = c(0.60, 0.72, 0.70)
+
+ewr_cancel = c(0.75, 0.95, 0.96)
+jfk_cancel = c(0.75, 0.90, 0.88)
+lga_cancel = c(0.74, 0.95, 0.95)
+
+
+
+tibble(model =c("weather only", "everything", "top 5"), Newark=c(0.58, 0.74, 0.73), JFK = c(0.57, 0.69, 0.69), LaGuardia = c(0.60, 0.72, 0.70)) %>% 
+  pivot_longer(cols = 2:4, names_to = "airport", values_to = "AUC") %>% 
+  mutate(model = factor(model, levels = c("weather only", "everything", "top 5")),
+         airport = factor(airport, levels = c("Newark", "JFK", "LaGuardia"))) %>% 
+  ggplot(aes(x=model, y=AUC, fill=airport))+
+  geom_col(position = "dodge") +
+  jamie_theme +
+  scale_fill_brewer(palette = "Set2") +
+  scale_y_continuous(limits = c(0,1))+
+  labs(title = "Delays Model: Comparison of AUC for each airport and model type")
+
+tibble(model =c("weather only", "everything", "top 5"),Newark = c(0.75, 0.95, 0.96), JFK = c(0.75, 0.90, 0.88), LaGuardia = c(0.74, 0.95, 0.95)) %>% 
+  pivot_longer(cols = 2:4, names_to = "airport", values_to = "AUC") %>% 
+  mutate(model = factor(model, levels = c("weather only", "everything", "top 5")),
+         airport = factor(airport, levels = c("Newark", "JFK", "LaGuardia"))) %>% 
+  ggplot(aes(x=model, y=AUC, fill=airport))+
+  geom_col(position = "dodge") +
+  jamie_theme +
+  scale_fill_brewer(palette = "Set2")+
+  labs(title = "Cancellation Model: Comparison of AUC for each airport and model type")
+
+
+```
+
+
+
+```{r}
+
+order_delayed <- flights_joined_analysis %>%
+  group_by(name.x) %>% 
+  summarise(pc_delayed = (sum(delayed_flight)-sum(cancelled_flight))/n(),
+            pc_delayed30 = sum(delayed_flight_over30)/n(),
+            pc_cancelled = sum(cancelled_flight)/n(),
+            total_flights = n()) %>% 
+  arrange(desc(pc_delayed)) %>% 
+  pull(name.x)
+
+flights_joined_analysis %>%
+  group_by(name.x) %>% 
+  summarise(pc_delayed = (sum(delayed_flight)-sum(cancelled_flight))/n(),
+            pc_delayed30 = sum(delayed_flight_over30)/n(),
+            pc_cancelled = sum(cancelled_flight)/n(),
+            total_flights = n()) %>% 
+  mutate(name.x= factor(name.x, order_delayed)) %>% 
+  ggplot(aes(x=name.x, y=pc_delayed, fill = pc_delayed))+
+  geom_col()+
+  coord_flip()+
+  scale_fill_continuous(low = "#F6BDC0", high = "#DC1C13") +
+  jamie_theme +
+  labs(title = "Percentage of flights delayed per airline", x= "percentage of flights delayed, %", y="Airline name")
+
+
+
+```
+
+```{r}
+
+order_cancelled <- flights_joined_analysis %>%
+  group_by(name.x) %>% 
+  summarise(pc_delayed = (sum(delayed_flight)-sum(cancelled_flight))/n(),
+            pc_delayed30 = sum(delayed_flight_over30)/n(),
+            pc_cancelled = sum(cancelled_flight)/n(),
+            total_flights = n()) %>% 
+  arrange(desc(pc_cancelled)) %>% 
+  pull(name.x)
+
+flights_joined_analysis %>%
+  group_by(name.x) %>% 
+  summarise(pc_delayed = (sum(delayed_flight)-sum(cancelled_flight))/n(),
+            pc_delayed30 = sum(delayed_flight_over30)/n(),
+            pc_cancelled = sum(cancelled_flight)/n(),
+            total_flights = n()) %>% 
+  mutate(name.x= factor(name.x, order_cancelled)) %>% 
+  ggplot(aes(x=name.x, y=pc_cancelled, fill = pc_cancelled))+
+  geom_col()+
+  coord_flip()+
+  scale_fill_continuous(low = "#F6BDC0", high = "#DC1C13") +
+  jamie_theme +
+  labs(title = "Percentage of flights cancelled per airline", x= "percentage of flights cancelled, %", y="Airline name")
+
+
+
+```

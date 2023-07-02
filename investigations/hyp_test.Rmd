@@ -1,0 +1,198 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(hms)
+library(lubridate)
+library(infer)
+```
+
+
+```{r}
+flights_joined_hyp <- read_csv(here::here("clean_data/flights_clean_joined_airports.csv")) 
+
+```
+
+# filtering
+
+```{r}
+flights_filtered <- flights_joined_hyp %>% 
+  filter(origin == "EWR") %>% 
+  select(name.x, delayed_flight, delayed_flight_over30, cancelled_flight)
+```
+
+# sum stats
+
+
+```{r}
+flights_filtered %>% 
+  group_by(name.x) %>% 
+  summarise(pc_delayed = sum(delayed_flight)/n(),
+            pc_delayed30 = sum(delayed_flight_over30)/n(),
+            pc_cancelled = sum(cancelled_flight)/n(),
+            total_flights = n())
+```
+
+
+# worst - JetBlue Airways
+
+```{r}
+jetblue_sum <- flights_filtered %>%
+  filter(name.x =="JetBlue Airways") %>% 
+  summarise(pc_delayed = sum(delayed_flight)/n(),
+            pc_delayed30 = sum(delayed_flight_over30)/n(),
+            pc_cancelled = sum(cancelled_flight)/n(),
+            total_flights = n())
+
+pop_sum <- flights_filtered %>%
+  summarise(pc_delayed = sum(delayed_flight)/n(),
+            pc_delayed30 = sum(delayed_flight_over30)/n(),
+            pc_cancelled = sum(cancelled_flight)/n(),
+            total_flights = n())
+
+flights_filtered
+flights_filtered %>% filter(delayed_flight == TRUE)
+
+
+
+jetblue_sum
+pop_sum
+```
+
+# best delta
+
+```{r}
+delta_sum <- flights_filtered %>%
+  filter(name.x =="Delta Air Lines Inc.") %>% 
+  summarise(pc_delayed = sum(delayed_flight)/n(),
+            pc_delayed30 = sum(delayed_flight_over30)/n(),
+            pc_cancelled = sum(cancelled_flight)/n(),
+            total_flights = n())
+```
+
+
+# hyp test JetBlue
+
+h0: pc_jetblue = 0.4014211	
+ha: pc_jetblue != 0.4014211	
+
+
+```{r}
+null_distribution <- flights_filtered %>%
+  mutate(delayed_flight = as.character(delayed_flight)) %>% 
+  filter(name.x == "JetBlue Airways") %>% 
+  specify(response = delayed_flight, success = "TRUE") %>% 
+  hypothesize(null = "point", p = 0.4014211) %>%
+  generate(reps = 5000, type = "draw") %>%
+  calculate(stat = "prop") #we specify that the stat is proportion (in the last lesson it was mean)
+
+head(null_distribution)
+```
+
+
+
+```{r}
+null_distribution %>%
+  visualise(bins = 30) +
+  shade_p_value(obs_stat = jetblue_sum$pc_delayed, direction = "both") 
+```
+
+# hyp test Delta
+
+h0: pc_delta = 0.4014211	
+ha: pc_delta != 0.4014211	
+
+
+```{r}
+null_distribution <- flights_filtered %>%
+  mutate(delayed_flight = as.character(delayed_flight)) %>% 
+  filter(name.x == "Delta Air Lines Inc.") %>% 
+  specify(response = delayed_flight, success = "TRUE") %>% 
+  hypothesize(null = "point", p = 0.4014211) %>%
+  generate(reps = 5000, type = "draw") %>%
+  calculate(stat = "prop") #we specify that the stat is proportion (in the last lesson it was mean)
+
+head(null_distribution)
+```
+
+
+
+```{r}
+null_distribution %>%
+  visualise(bins = 30) +
+  shade_p_value(obs_stat = delta_sum$pc_delayed, direction = "both") 
+```
+
+
+
+#all airports
+
+
+```{r}
+flights_filtered <- flights_joined_hyp %>% 
+  select(name.x, delayed_flight, delayed_flight_over30, cancelled_flight)
+```
+
+```{r}
+
+
+flights_filtered %>%
+  group_by(name.x) %>% 
+  summarise(pc_delayed = (sum(delayed_flight)-sum(cancelled_flight))/n(),
+            pc_delayed30 = sum(delayed_flight_over30)/n(),
+            pc_cancelled = sum(cancelled_flight)/n(),
+            total_flights = n()) 
+```
+
+```{r}
+sum_stat_all <- flights_filtered %>%
+  summarise(pc_delayed = (sum(delayed_flight))/n(),
+            pc_delayed30 = sum(delayed_flight_over30)/n(),
+            pc_cancelled = sum(cancelled_flight)/n(),
+            total_flights = n()) 
+sum_stat_all
+```
+
+
+
+# hyp test Hawaiian
+
+h0: pc_hawaiian = 0.3884338	
+ha: pc_hawaiian != 0.3884338	
+
+
+```{r}
+sum_stat_hawaiian <- flights_filtered %>%
+  filter(name.x == "Hawaiian Airlines Inc.") %>% 
+  summarise(pc_delayed = (sum(delayed_flight)/n()),
+            pc_delayed30 = sum(delayed_flight_over30)/n(),
+            pc_cancelled = sum(cancelled_flight)/n(),
+            total_flights = n()) 
+sum_stat_hawaiian
+```
+
+
+```{r}
+null_distribution <- flights_filtered %>%
+  mutate(delayed_flight = as.character(delayed_flight)) %>% 
+  filter(name.x == "Hawaiian Airlines Inc.") %>% 
+  specify(response = delayed_flight, success = "TRUE") %>% 
+  hypothesize(null = "point", p = 0.3884338) %>%
+  generate(reps = 5000, type = "draw") %>%
+  calculate(stat = "prop") #we specify that the stat is proportion (in the last lesson it was mean)
+
+head(null_distribution)
+```
+
+
+
+```{r}
+null_distribution %>%
+  visualise(bins = 30) +
+  shade_p_value(obs_stat = sum_stat_hawaiian$pc_delayed, direction = "both") 
+```

@@ -1,0 +1,84 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(hms)
+library(lubridate)
+library(ggrepel)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(maps)
+library(sf)
+```
+
+# Read data
+
+```{r}
+flights_joined_maps <- read_csv(here::here("clean_data/flights_clean_joined_airports.csv")) %>% 
+  mutate(name = if_else(dest == "SJU", "Luis Muñoz Marin International Airport", name),
+         lat.y = if_else(dest == "SJU", 18.44, lat.y),
+         lon.y = if_else(dest == "SJU", -66.00, lon.y))
+
+```
+
+```{r}
+worldmap <- borders("state", colour="#efede1", fill="#efede1")
+
+
+flights_joined_maps_test <- flights_joined_maps %>% 
+  filter(origin == "EWR") %>% 
+  group_by(name) %>%
+  mutate(delay_pc_on_route = sum(delayed_flight)/n(),
+         total_flights_on_route = n()) %>% 
+  slice_head() %>% 
+  ungroup() %>% 
+  slice_max(total_flights_on_route, n=5)
+
+newark <- flights_joined_maps %>% 
+  head(1)
+
+ggplot() + worldmap + 
+ geom_curve(data=flights_joined_maps_test, aes(x = lon.x, y = lat.x, xend = lon.y, yend = lat.y), col = "#b29e7d", size = 1, curvature = .2) + 
+ geom_point(data=flights_joined_maps_test, aes(x = lon.x, y = lat.x), col = "#970027") + 
+ geom_point(data=flights_joined_maps_test, aes(x = lon.y, y = lat.y), col = "#970027") + 
+ geom_text_repel(data=newark, aes(x = lon.x, y = lat.x), label = "Newark Liberty International Airport", col = "black", size = 2, segment.color = NA) + 
+ geom_text_repel(data=flights_joined_maps_test, aes(x = lon.y, y = lat.y, label = name), col = "black", size = 2, segment.color = NA) + 
+ theme(panel.background = element_rect(fill="white"), 
+ axis.line = element_blank(),
+ axis.text.x = element_blank(),
+ axis.text.y = element_blank(),
+ axis.ticks = element_blank(),
+ axis.title.x = element_blank(),
+ axis.title.y = element_blank()) 
+```
+
+```{r}
+flights_joined_maps %>% 
+  filter(is.na(name))
+```
+
+```{r}
+
+worldmap <- ne_countries(returnclass='sf')
+usa <- ne_countries(country = "united states of america", returnclass='sf')
+
+states <- sf::st_as_sf(maps::map("state", plot = FALSE, fill = TRUE))
+
+ggplot() + 
+  geom_sf(data = worldmap) +
+  geom_sf(data = usa, fill = 'chartreuse1', alpha = 0.05) +
+  geom_sf(data = states, fill = 'chartreuse1', alpha = 0.05) +
+ geom_curve(data=flights_joined_maps_test, aes(x = lon.x, y = lat.x, xend = lon.y, yend = lat.y), size = 1, curvature = .2) + 
+ geom_point(data=flights_joined_maps_test, aes(x = lon.x, y = lat.x), col = "#970027") + 
+ geom_point(data=flights_joined_maps_test, aes(x = lon.y, y = lat.y), col = "#970027") + 
+ geom_label_repel(data=newark, aes(x = lon.x, y = lat.x), label = "EWR", col = "red", size = 3, segment.color = NA, nudge_y = -1) + 
+ geom_label_repel(data=flights_joined_maps_test, aes(x = lon.y, y = lat.y, label = dest), col = "black", size = 3, segment.color = NA, nudge_x = 0, nudge_y = 1) +
+  coord_sf(xlim = c(-130, -64), ylim = c(20, 50))+
+  theme_void()
+
+```
+

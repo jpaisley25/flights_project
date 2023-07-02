@@ -1,0 +1,986 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# libraries 
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(hms)
+library(lubridate)
+library(modelr)
+library(caret)
+library(broom)
+library(leaps)
+library(glmulti)
+library(tidyverse)
+library(pROC)
+```
+
+# reading in data
+
+```{r}
+flights <- read_csv(here::here("data/flights.csv"))
+weather <- read_csv(here::here("data/weather.csv"))
+weather_alt <- read_csv(here::here("data/export.csv"))
+planes <-  read_csv(here::here("data/planes.csv"))
+airlines <- read_csv(here::here("data/airlines.csv"))
+airports <- read_csv(here::here("data/airports.csv"))
+
+```
+
+
+# flights
+
+```{r}
+flights %>% 
+  arrange(sched_dep_time)
+
+flights_2 <- flights %>% 
+  rename(flight_duration = air_time) %>% 
+  mutate(across(contains("_time"), ~ sprintf("%04d", .)),
+         across(contains("_time"), ~ format(strptime(., format="%H%M"), format = "%H:%M")),
+         across(contains("_time"), ~ as.POSIXct(., format = "%H:%M", tz = "UTC")),
+         across(contains("_time"), ~ as_hms(.)),
+         cancelled_flight = if_else(is.na(dep_time), TRUE, FALSE),
+         delayed_flight = if_else(dep_delay > 0 | is.na(dep_delay), TRUE, FALSE)) 
+
+
+# cancelled flights (ASSUMPTION)
+
+flights_2 %>% 
+  filter(cancelled_flight == TRUE)
+
+flights_2 %>% 
+  filter(origin == "EWR") %>%
+  mutate(weekday = weekdays(time_hour)) %>% 
+  mutate(across(weekday, factor, levels=c("Monday","Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))) %>% 
+  ggplot(aes(x=weekday, y = dep_delay))+
+  geom_boxplot()
+
+flights %>% 
+  distinct(dest)
+
+
+```
+
+```{r}
+flights_alt <- flights %>% 
+  rename(flight_duration = air_time) %>% 
+  mutate(across(contains("_time"), ~ sprintf("%04d", .)),
+         across(contains("_time"), ~ format(strptime(., format="%H%M"), format = "%H:%M")),
+         across(contains("_time"), ~ as.POSIXct(., format = "%H:%M", tz = "UTC")),
+         across(contains("_time"), ~ as_hms(.)),
+         cancelled_flight = if_else(is.na(dep_time), TRUE, FALSE),
+         delayed_flight = if_else(dep_delay > 0 | is.na(dep_delay), TRUE, FALSE),
+         delayed_flight_over30 = if_else(dep_delay > 30 | is.na(dep_delay), TRUE, FALSE)) %>% 
+  mutate(date = lubridate::make_date(year = year, month = month, day = day))
+```
+
+
+# weather
+
+```{r}
+weather_2 <- weather %>% 
+  select(origin, wind_dir, wind_speed, wind_gust, visib, time_hour) %>% 
+  fill(contains("wind")) %>% 
+  fill(visib) %>%
+  drop_na(wind_dir) %>% 
+  mutate(wind_dir2 = case_when(
+    wind_dir == 0 ~ "No Wind",
+    wind_dir <= 22.5 | wind_dir >= 337.5 ~ "North",
+    wind_dir > 22.5 & wind_dir < 67.5 ~ "North East",
+    wind_dir >= 67.5 & wind_dir <= 112.5 ~ "East",
+    wind_dir > 112.5 & wind_dir < 157.5 ~ "South East",
+    wind_dir >= 157.5 & wind_dir <= 202.5 ~ "South",
+    wind_dir > 202.5 & wind_dir < 247.5 ~ "South West",
+    wind_dir >= 247.5 & wind_dir <= 292.5 ~ "West",
+    wind_dir > 292.5 & wind_dir < 337.5 ~ "North West",
+    TRUE ~ "Other"
+  ))
+
+weather_2 %>% 
+  count(wind_dir2)
+
+weather %>% 
+  count(wind_dir)
+
+
+# not enough data for temp, dewp, humid, precip and pressure 
+# fillforward imputation on wind params
+```
+
+```{r}
+
+weather_alt_clean <- weather_alt %>% 
+  select(-wpgt, -tsun) %>% 
+  drop_na() %>% 
+  rename(wind_dir = wdir) %>% 
+  mutate(wind_dir2 = case_when(
+    wind_dir <= 22.5 | wind_dir >= 337.5 ~ "North",
+    wind_dir > 22.5 & wind_dir < 67.5 ~ "North East",
+    wind_dir >= 67.5 & wind_dir <= 112.5 ~ "East",
+    wind_dir > 112.5 & wind_dir < 157.5 ~ "South East",
+    wind_dir >= 157.5 & wind_dir <= 202.5 ~ "South",
+    wind_dir > 202.5 & wind_dir < 247.5 ~ "South West",
+    wind_dir >= 247.5 & wind_dir <= 292.5 ~ "West",
+    wind_dir > 292.5 & wind_dir < 337.5 ~ "North West",
+    TRUE ~ "Other"
+  )) 
+
+
+```
+
+
+# planes
+
+```{r}
+planes_2 <- planes %>% 
+  select(-speed) %>% 
+  mutate(year = na_if(year, 0),
+         engines = as.character(engines)) %>% 
+  mutate(seats = case_when(
+    seats < 11 ~ "10 or less",
+    seats < 101 ~ "11 to 100",
+    seats < 251 ~ "101 to 250",
+    TRUE ~ "Over 250"
+  )) %>% 
+  rename(year_manufactured = year)
+  
+planes %>% 
+  select(-speed) %>% 
+  mutate(year = na_if(year, 0)) %>%
+  mutate(seats = case_when(
+    seats < 11 ~ "10 or less",
+    seats < 101 ~ "11 to 100",
+    seats < 251 ~ "101 to 250",
+    TRUE ~ "Over 250"
+  )) %>% 
+  count(seats)
+```
+
+# airlines
+
+```{r}
+airlines
+```
+
+# airports
+
+```{r}
+airports %>% 
+  ggplot(aes(lon, lat)) +
+  geom_point()
+```
+
+
+
+
+
+
+
+# flights and airlines join
+
+```{r}
+flights_airlines <- flights_2 %>% 
+  left_join(airlines, by = "carrier") 
+
+flights_airlines %>% 
+  group_by(name) %>% 
+  mutate(delayed = if_else(dep_delay > 0, TRUE, FALSE)) %>% 
+  summarise(total_flights = n(),
+            delayed_flights_pc = sum(delayed, na.rm = TRUE)/n())
+
+flights_airlines %>% 
+  filter(name == "Delta Air Lines Inc.",
+         origin == "EWR") %>% 
+  group_by(month, day) %>% 
+  summarise(delayed_flight_pc = sum(delayed_flight, na.rm = TRUE)/n())
+  
+
+
+```
+
+
+
+# join everything
+
+```{r}
+flights_joined <- flights_2 %>% 
+  left_join(airlines, by = "carrier") %>% 
+  left_join(weather_2, by = c("origin", "time_hour")) %>% 
+  left_join(planes_2, by = c("tailnum")) %>%
+  mutate(across(type:engine, ~ case_when(
+    is.na(.) ~ "Unknown",
+    TRUE ~ .
+  ))) %>% 
+  mutate(manufacturer = case_when(
+    manufacturer == "AIRBUS INDUSTRIE" ~ "AIRBUS",
+    manufacturer == "EMBRAER S A" ~ "EMBRAER",
+    manufacturer %in% c("AIRBUS", "BOEING", "BOMBARDIER INC", "EMBRAER", "Unknown") ~ manufacturer,
+    TRUE ~ "Other"
+  )) 
+
+
+
+
+
+# manufacturers under 10000 put into other cat
+# combine airbus and airbus industrie and embraer and embraer S A
+```
+
+
+# first model
+
+## correlations
+
+```{r}
+flights_model_data <- flights_joined %>% 
+  filter(origin == "EWR",
+         cancelled_flight == FALSE) %>% 
+  select(-year, -day, -dep_time, -arr_time, -sched_arr_time, -arr_delay, -carrier, -flight, -tailnum, -origin, -distance, -hour, -minute, -time_hour, -cancelled_flight, -wind_dir, -model, -dest, -delayed_flight) %>% 
+  select(dep_delay, everything()) %>% 
+  mutate(across(is.character, as.factor),
+         month = as.factor(month),
+         sched_dep_time = as.numeric(sched_dep_time)) %>% 
+ drop_na()
+
+
+flights_model_data %>% 
+  select(dep_delay, 2:6) %>% 
+  GGally::ggpairs()
+
+flights_model_data %>% 
+  select(dep_delay, 7:11) %>% 
+  GGally::ggpairs()
+
+flights_model_data %>% 
+  select(dep_delay, 12:15) %>% 
+  GGally::ggpairs()
+```
+
+```{r}
+flights_model_data %>% 
+  count(wind_dir2)
+```
+
+
+```{r}
+model_1 <- lm(dep_delay ~ wind_gust + wind_dir2 + visib + wind_gust:wind_dir2, flights_model_data)
+
+summary(model_1)
+```
+
+
+
+# logistic regression
+
+```{r}
+flights_model_data_lg <- flights_joined %>% 
+  filter(origin == "EWR") %>% 
+  select(-year, -day, -dep_time, -arr_time, -sched_arr_time, -arr_delay, -carrier, -flight, -tailnum, -origin, -distance, -hour, -minute, -time_hour, -delayed_flight, -wind_dir, -model, -dest, -dep_delay, -wind_speed, -engines, -engine, -type, - flight_duration) %>% 
+  select(cancelled_flight, everything()) %>% 
+  mutate(across(is.character, as.factor),
+         month = as.factor(month),
+         sched_dep_time = as.numeric(sched_dep_time)) %>% 
+ drop_na()
+
+flights_model_data_lg %>% 
+  filter(cancelled_flight == TRUE)
+```
+
+```{r}
+n_data <- nrow(flights_model_data_lg)
+
+test_index <- sample(1:n_data, size = n_data * 0.2)
+
+test <- flights_model_data_lg %>%  slice(test_index)
+
+train <- flights_model_data_lg %>% slice(-test_index)
+```
+
+
+```{r}
+lg_model_1 <- glm(cancelled_flight ~ wind_gust + wind_dir2 + visib + wind_gust:wind_dir2, data = train, family = binomial(link = 'logit'))
+summary(lg_model_1)
+
+lg_model_2 <- glm(cancelled_flight ~ ., data = train, family = binomial(link = 'logit'))
+summary(lg_model_2)
+```
+
+
+```{r}
+predict_log_1 <- test %>% 
+  add_predictions(lg_model_1, type = "response")
+
+predict_log_2 <- test %>% 
+  add_predictions(lg_model_2, type = "response")
+```
+
+```{r}
+roc_obj_1 <- predict_log_1 %>% 
+  roc(response = cancelled_flight,
+      predictor = pred)
+
+roc_obj_2 <- predict_log_2 %>% 
+  roc(response = cancelled_flight,
+      predictor = pred)
+
+roc_curve <- ggroc(data = list(roc_obj_1, roc_obj_2), legacy.axes = TRUE) +
+  coord_fixed() +
+  labs(y = "sensitivity (TRR)",
+       x = "1 - sensititvity(1 -TNR)")
+
+roc_curve
+
+auc(roc_obj_1)
+auc(roc_obj_2)
+
+```
+
+
+
+
+
+```{r}
+flights_model_data_lg %>% 
+  ggplot(aes(delayed_flight, wind_gust))+
+  geom_boxplot()
+```
+
+
+
+# wind speed/dir clusters? 
+
+
+```{r}
+flights_model_data_lg %>% 
+  group_by(wind_dir2) %>% 
+  summarise(percent_delayed = sum(delayed_flight) / n(),
+            avg_wind_speed = mean(wind_gust))
+```
+
+
+```{r}
+flights_joined %>% 
+  filter(origin == "EWR") %>% 
+  ggplot(aes(x = wind_gust, y = dep_delay)) +
+  geom_point()
+```
+
+# join alt weather
+
+```{r}
+flights_joined_alt <- flights_alt %>% 
+  left_join(airlines, by = "carrier") %>% 
+  left_join(weather_alt_clean, by = c("date")) %>% 
+  left_join(planes_2, by = c("tailnum")) %>%
+  mutate(across(type:engine, ~ case_when(
+    is.na(.) ~ "Unknown",
+    TRUE ~ .
+  ))) %>% 
+  mutate(manufacturer = case_when(
+    manufacturer == "AIRBUS INDUSTRIE" ~ "AIRBUS",
+    manufacturer == "EMBRAER S A" ~ "EMBRAER",
+    manufacturer %in% c("AIRBUS", "BOEING", "BOMBARDIER INC", "EMBRAER", "Unknown") ~ manufacturer,
+    TRUE ~ "Other"
+  )) 
+```
+
+
+# lgr different weather data
+
+
+```{r}
+flights_model_data_lg_alt <- flights_joined_alt %>% 
+  filter(origin == "EWR") %>% 
+  select(-year, -day, -dep_time, -arr_time, -sched_arr_time, -arr_delay, -carrier, -flight, -tailnum, -origin, -distance, -hour, -minute, -time_hour, -delayed_flight, -wind_dir, -model, -dest, -dep_delay, -engines, -engine, -type, -flight_duration, -delayed_flight_over30) %>% 
+  select(cancelled_flight, everything()) %>% 
+  mutate(across(is.character, as.factor),
+         month = as.factor(month),
+         sched_dep_time = as.numeric(sched_dep_time)) %>% 
+  drop_na()
+ 
+
+flights_model_data_lg_alt %>% 
+  filter(cancelled_flight == TRUE)
+```
+
+```{r}
+n_data <- nrow(flights_model_data_lg_alt)
+
+test_index <- sample(1:n_data, size = n_data * 0.2)
+
+test_2 <- flights_model_data_lg_alt %>%  slice(test_index)
+
+train_2 <- flights_model_data_lg_alt %>% slice(-test_index)
+```
+
+
+```{r}
+lg_model_1 <- glm(cancelled_flight ~ tavg + tmin + tmax + prcp + snow + wspd + pres + wind_dir2, data = train_2, family = binomial(link = 'logit'))
+summary(lg_model_1)
+
+lg_model_2 <- glm(cancelled_flight ~ ., data = train_2, family = binomial(link = 'logit'))
+summary(lg_model_2)
+```
+
+```{r}
+predict_log_1 <- test_2 %>% 
+  add_predictions(lg_model_1, type = "response")
+
+predict_log_2 <- test_2 %>% 
+  add_predictions(lg_model_2, type = "response")
+```
+
+```{r}
+roc_obj_1 <- predict_log_1 %>% 
+  roc(response = cancelled_flight,
+      predictor = pred)
+
+roc_obj_2 <- predict_log_2 %>% 
+  roc(response = cancelled_flight,
+      predictor = pred)
+
+roc_curve <- ggroc(data = list(roc_obj_1, roc_obj_2), legacy.axes = TRUE) +
+  coord_fixed() +
+  labs(y = "sensitivity (TRR)",
+       x = "1 - sensititvity(1 -TNR)")
+
+roc_curve
+
+auc(roc_obj_1)
+auc(roc_obj_2)
+
+```
+
+
+```{r}
+threshold <- 0.04
+predict_log_2 <- predict_log_2 %>%
+  mutate(pred_thresh_0.6 = pred >= threshold)
+
+head(predict_log_2, 10)
+
+conf_table <- predict_log_2 %>%
+  tabyl(cancelled_flight, pred_thresh_0.6)
+
+conf_table
+```
+
+#glmulti on cancellations model
+
+
+```{r}
+glmulti_search_all_mains <- glmulti(
+  cancelled_flight ~ ., 
+  data = train_2,
+  level = 1,
+  minsize = 4,
+  maxsize = 5,
+  method = "h",            
+  crit = "bic",            
+  confsetsize = 10,        
+  plotty = F, 
+  report = T,              
+  fitfunction = "glm",    
+  family = binomial(link = "logit")) 
+summary(glmulti_search_all_mains)
+
+glmulti_search_previous_mains_one_pair <- glmulti(
+  cancelled_flight ~ 1+month+name+sched_dep_time+prcp+wspd, 
+  data = train_2,
+  level = 2,               
+  method = "h",            
+  crit = "bic",            
+  confsetsize = 10,        
+  marginality = TRUE,      
+  minsize = 5,            
+  maxsize = 6,             
+  plotty = F, 
+  report = T,              
+  fitfunction = "glm",     
+  family = binomial(link = "logit")) 
+
+summary(glmulti_search_previous_mains_one_pair)
+
+```
+
+```{r}
+lg_model_3 <- glm(cancelled_flight ~ 1+month+name+sched_dep_time+prcp+wspd, data = train_2, family = binomial(link = 'logit'))
+summary(lg_model_3)
+```
+
+```{r}
+predict_log_1 <- test_2 %>% 
+  add_predictions(lg_model_1, type = "response")
+
+predict_log_2 <- test_2 %>% 
+  add_predictions(lg_model_2, type = "response")
+
+predict_log_3 <- test_2 %>% 
+  add_predictions(lg_model_3, type = "response")
+```
+
+```{r}
+roc_obj_1 <- predict_log_1 %>% 
+  roc(response = cancelled_flight,
+      predictor = pred)
+
+roc_obj_2 <- predict_log_2 %>% 
+  roc(response = cancelled_flight,
+      predictor = pred)
+
+roc_obj_3 <- predict_log_3 %>% 
+  roc(response = cancelled_flight,
+      predictor = pred)
+
+roc_curve <- ggroc(data = list(roc_obj_1, roc_obj_2, roc_obj_3), legacy.axes = TRUE) +
+  coord_fixed() +
+  labs(y = "sensitivity (TRR)",
+       x = "1 - sensititvity(1 -TNR)")
+
+roc_curve
+
+auc(roc_obj_1)
+auc(roc_obj_2)
+auc(roc_obj_3)
+
+```
+
+
+# lgr delays over 30 mins
+
+
+```{r}
+flights_model_data_lg_alt_2 <- flights_joined_alt %>% 
+  filter(origin == "EWR") %>% 
+  select(-year, -day, -dep_time, -arr_time, -sched_arr_time, -arr_delay, -carrier, -flight, -tailnum, -origin, -distance, -hour, -minute, -time_hour, -cancelled_flight, -wind_dir, -model, -dest, -dep_delay, -engines, -engine, -type, -flight_duration, -delayed_flight) %>% 
+  select(delayed_flight_over30, everything()) %>% 
+  mutate(across(is.character, as.factor),
+         month = as.factor(month),
+         sched_dep_time = as.numeric(sched_dep_time)) %>% 
+  drop_na()
+ 
+
+flights_model_data_lg_alt %>% 
+  filter(cancelled_flight == TRUE)
+```
+
+```{r}
+n_data <- nrow(flights_model_data_lg_alt_2)
+
+test_index <- sample(1:n_data, size = n_data * 0.2)
+
+test_3 <- flights_model_data_lg_alt_2 %>%  slice(test_index)
+
+train_3 <- flights_model_data_lg_alt_2 %>% slice(-test_index)
+```
+
+```{r}
+lg_model_1 <- glm(delayed_flight_over30 ~ tavg + tmin + tmax + prcp + snow + wspd + pres + wind_dir2, data = train_3, family = binomial(link = 'logit'))
+summary(lg_model_1)
+
+lg_model_2 <- glm(delayed_flight_over30 ~ ., data = train_3, family = binomial(link = 'logit'))
+summary(lg_model_2)
+
+lg_model_3 <- glm(delayed_flight_over30 ~ 1+month+name+sched_dep_time+prcp+wspd, data = train_3, family = binomial(link = 'logit'))
+summary(lg_model_3)
+```
+
+```{r}
+predict_log_1 <- test_3 %>% 
+  add_predictions(lg_model_1, type = "response")
+
+predict_log_2 <- test_3 %>% 
+  add_predictions(lg_model_2, type = "response")
+
+predict_log_3 <- test_3 %>% 
+  add_predictions(lg_model_3, type = "response")
+
+```
+
+```{r}
+roc_obj_1 <- predict_log_1 %>% 
+  roc(response = delayed_flight_over30,
+      predictor = pred)
+
+roc_obj_2 <- predict_log_2 %>% 
+  roc(response = delayed_flight_over30,
+      predictor = pred)
+
+roc_obj_3 <- predict_log_3 %>% 
+  roc(response = delayed_flight_over30,
+      predictor = pred)
+
+
+
+roc_curve <- ggroc(data = list(roc_obj_1, roc_obj_2, roc_obj_3), legacy.axes = TRUE) +
+  coord_fixed() +
+  labs(y = "sensitivity (TRR)",
+       x = "1 - sensititvity(1 -TNR)")
+
+roc_curve
+
+auc(roc_obj_1)
+auc(roc_obj_2)
+auc(roc_obj_3)
+
+```
+
+# better method for sched take off time?
+
+```{r}
+flights_joined_alt %>% 
+  filter(origin == "EWR") %>% 
+  ggplot(aes(x= sched_dep_time, y= dep_delay))+
+  geom_point()
+
+flights_joined_alt %>% 
+  filter(origin == "EWR") %>% 
+  mutate(dep_hr = as_hms(round_date(lubridate::as_datetime(sched_dep_time), "hour"))) %>% 
+  group_by(dep_hr) %>% 
+  summarise(perc_delayed30 = sum(delayed_flight_over30)/n(),
+            perc_delayed = sum(delayed_flight)/n(),
+            perc_cancelled = sum(cancelled_flight)/n(),
+            number_of_flights = n()) %>% 
+  ggplot(aes(x= dep_hr))+
+  geom_line(aes(y= perc_delayed), colour = "red")+
+  geom_line(aes(y= perc_delayed30), colour = "blue")+
+  geom_line(aes(y= perc_cancelled))
+  
+```
+
+```{r}
+flights_joined_alt_3 <- flights_joined_alt %>% 
+  mutate(dep_hr = as_hms(round_date(lubridate::as_datetime(sched_dep_time), "hour")),
+         time_cat = as.numeric(dep_hr),
+         time_cat = case_when(
+           time_cat < 28800 ~ "Morning",
+           time_cat < 57600 ~ "Day",
+           TRUE ~ "Evening"
+         )
+         )
+
+as.tibble(as.numeric(flights_joined_alt$dep_hr))
+
+flights_joined_alt_3 %>% 
+  filter(name=="Frontier Airlines Inc.") %>% 
+  drop_na()
+```
+
+```{r}
+flights_model_data_lg_alt_3 <- flights_joined_alt_3 %>% 
+  filter(origin == "EWR") %>% 
+  select(-year, -day, -dep_time, -arr_time, -sched_arr_time, -arr_delay, -carrier, -flight, -tailnum, -origin, -distance, -hour, -minute, -time_hour, -delayed_flight_over30, -wind_dir, -model, -dest, -dep_delay, -engines, -engine, -type, -flight_duration, -dep_hr, -sched_dep_time, -date, - delayed_flight) %>% 
+  select(cancelled_flight, everything()) %>% 
+  mutate(across(is.character, as.factor),
+         month = as.factor(month)) %>% 
+  drop_na()
+ 
+
+flights_model_data_lg_alt %>% 
+  filter(cancelled_flight == TRUE)
+```
+
+```{r}
+n_data <- nrow(flights_model_data_lg_alt_3)
+
+test_index <- sample(1:n_data, size = n_data * 0.2)
+
+test_3 <- flights_model_data_lg_alt_3 %>%  slice(test_index)
+
+train_3 <- flights_model_data_lg_alt_3 %>% slice(-test_index)
+```
+
+```{r}
+lg_model_1 <- glm(cancelled_flight ~ tavg + tmin + tmax + prcp + snow + wspd + pres + wind_dir2, data = train_3, family = binomial(link = 'logit'))
+summary(lg_model_1)
+
+lg_model_2 <- glm(cancelled_flight ~ ., data = train_3, family = binomial(link = 'logit'))
+summary(lg_model_2)
+
+lg_model_3 <- glm(cancelled_flight ~ 1+month+name+time_cat+prcp+wspd, data = train_3, family = binomial(link = 'logit'))
+summary(lg_model_3)
+```
+
+```{r}
+predict_log_1 <- test_3 %>% 
+  add_predictions(lg_model_1, type = "response")
+
+predict_log_2 <- test_3 %>% 
+  add_predictions(lg_model_2, type = "response")
+
+predict_log_3 <- test_3 %>% 
+  add_predictions(lg_model_3, type = "response")
+
+```
+
+```{r}
+roc_obj_1 <- predict_log_1 %>% 
+  roc(response = cancelled_flight,
+      predictor = pred)
+
+roc_obj_2 <- predict_log_2 %>% 
+  roc(response = cancelled_flight,
+      predictor = pred)
+
+roc_obj_3 <- predict_log_3 %>% 
+  roc(response = cancelled_flight,
+      predictor = pred)
+
+
+
+roc_curve <- ggroc(data = list(roc_obj_1, roc_obj_2, roc_obj_3), legacy.axes = TRUE) +
+  coord_fixed() +
+  labs(y = "sensitivity (TRR)",
+       x = "1 - sensititvity(1 -TNR)")
+
+roc_curve
+
+auc(roc_obj_1)
+auc(roc_obj_2)
+auc(roc_obj_3)
+
+```
+
+
+# previous flight delayed
+
+
+```{r}
+flights_model_data_lg_alt_3 <- flights_joined_alt_3 %>% 
+  filter(origin == "EWR") %>% 
+  select(-year, -day, -dep_time, -arr_time, -sched_arr_time, -arr_delay, -carrier, -flight, -tailnum, -origin, -distance, -hour, -minute, -time_hour, -delayed_flight, -wind_dir, -model, -dest, -dep_delay, -engines, -engine, -type, -flight_duration, -dep_hr, -sched_dep_time, -date, -delayed_flight_over30) %>% 
+  select(cancelled_flight, everything()) %>% 
+  mutate(across(is.character, as.factor),
+         month = as.factor(month)) %>% 
+  drop_na() %>%
+  group_by(name) %>% 
+  mutate(prev_flight_cancelled = if_else(lag(cancelled_flight) == TRUE, TRUE, FALSE)) %>% 
+  drop_na()
+```
+
+```{r}
+n_data <- nrow(flights_model_data_lg_alt_3)
+
+test_index <- sample(1:n_data, size = n_data * 0.2)
+
+test_3 <- flights_model_data_lg_alt_3 %>%  slice(test_index)
+
+train_3 <- flights_model_data_lg_alt_3 %>% slice(-test_index)
+```
+
+```{r}
+lg_model_1 <- glm(cancelled_flight ~ tavg + tmin + tmax + prcp + snow + wspd + pres + wind_dir2, data = train_3, family = binomial(link = 'logit'))
+summary(lg_model_1)
+
+lg_model_2 <- glm(cancelled_flight ~ ., data = train_3, family = binomial(link = 'logit'))
+summary(lg_model_2)
+
+lg_model_3 <- glm(cancelled_flight ~ 1+month+name+time_cat+prcp+wspd+prev_flight_cancelled, data = train_3, family = binomial(link = 'logit'))
+summary(lg_model_3)
+
+
+```
+
+```{r}
+predict_log_1 <- test_3 %>% 
+  add_predictions(lg_model_1, type = "response")
+
+predict_log_2 <- test_3 %>% 
+  add_predictions(lg_model_2, type = "response")
+
+predict_log_3 <- test_3 %>% 
+  add_predictions(lg_model_3, type = "response")
+
+```
+
+```{r}
+roc_obj_1 <- predict_log_1 %>% 
+  roc(response = cancelled_flight,
+      predictor = pred)
+
+roc_obj_2 <- predict_log_2 %>% 
+  roc(response = cancelled_flight,
+      predictor = pred)
+
+roc_obj_3 <- predict_log_3 %>% 
+  roc(response = cancelled_flight,
+      predictor = pred)
+
+
+
+roc_curve <- ggroc(data = list(roc_obj_1, roc_obj_2, roc_obj_3), legacy.axes = TRUE) +
+  coord_fixed() +
+  labs(y = "sensitivity (TRR)",
+       x = "1 - sensititvity(1 -TNR)")
+
+roc_curve
+
+auc(roc_obj_1)
+auc(roc_obj_2)
+auc(roc_obj_3)
+
+```
+
+
+# other airports
+
+#lga
+
+```{r}
+flights_model_data_lg_alt_3 <- flights_joined_alt_3 %>% 
+  filter(origin == "LGA") %>% 
+  select(-year, -day, -dep_time, -arr_time, -sched_arr_time, -arr_delay, -carrier, -flight, -tailnum, -origin, -distance, -hour, -minute, -time_hour, -delayed_flight, -wind_dir, -model, -dest, -dep_delay, -engines, -engine, -type, -flight_duration, -dep_hr, -sched_dep_time, -date, -delayed_flight_over30) %>% 
+  select(cancelled_flight, everything()) %>% 
+  mutate(across(is.character, as.factor),
+         month = as.factor(month)) %>% 
+  drop_na() %>%
+  group_by(name) %>% 
+  mutate(prev_flight_cancelled = if_else(lag(cancelled_flight) == TRUE, TRUE, FALSE)) %>% 
+  drop_na()
+```
+
+```{r}
+n_data <- nrow(flights_model_data_lg_alt_3)
+
+test_index <- sample(1:n_data, size = n_data * 0.2)
+
+test_3 <- flights_model_data_lg_alt_3 %>%  slice(test_index)
+
+train_3 <- flights_model_data_lg_alt_3 %>% slice(-test_index)
+```
+
+```{r}
+lg_model_1 <- glm(cancelled_flight ~ tavg + tmin + tmax + prcp + snow + wspd + pres + wind_dir2, data = train_3, family = binomial(link = 'logit'))
+summary(lg_model_1)
+
+lg_model_2 <- glm(cancelled_flight ~ ., data = train_3, family = binomial(link = 'logit'))
+summary(lg_model_2)
+
+lg_model_3 <- glm(cancelled_flight ~ 1+month+name+time_cat+prcp+wspd+prev_flight_cancelled, data = train_3, family = binomial(link = 'logit'))
+summary(lg_model_3)
+
+
+```
+
+```{r}
+predict_log_1 <- test_3 %>% 
+  add_predictions(lg_model_1, type = "response")
+
+predict_log_2 <- test_3 %>% 
+  add_predictions(lg_model_2, type = "response")
+
+predict_log_3 <- test_3 %>% 
+  add_predictions(lg_model_3, type = "response")
+
+```
+
+```{r}
+roc_obj_1 <- predict_log_1 %>% 
+  roc(response = cancelled_flight,
+      predictor = pred)
+
+roc_obj_2 <- predict_log_2 %>% 
+  roc(response = cancelled_flight,
+      predictor = pred)
+
+roc_obj_3 <- predict_log_3 %>% 
+  roc(response = cancelled_flight,
+      predictor = pred)
+
+
+
+roc_curve <- ggroc(data = list(roc_obj_1, roc_obj_2, roc_obj_3), legacy.axes = TRUE) +
+  coord_fixed() +
+  labs(y = "sensitivity (TRR)",
+       x = "1 - sensititvity(1 -TNR)")
+
+roc_curve
+
+auc(roc_obj_1)
+auc(roc_obj_2)
+auc(roc_obj_3)
+
+```
+
+#jfk
+
+```{r}
+flights_model_data_lg_alt_3 <- flights_joined_alt_3 %>% 
+  filter(origin == "JFK") %>% 
+  select(-year, -day, -dep_time, -arr_time, -sched_arr_time, -arr_delay, -carrier, -flight, -tailnum, -origin, -distance, -hour, -minute, -time_hour, -delayed_flight, -wind_dir, -model, -dest, -dep_delay, -engines, -engine, -type, -flight_duration, -dep_hr, -sched_dep_time, -date, -delayed_flight_over30) %>% 
+  select(cancelled_flight, everything()) %>% 
+  mutate(across(is.character, as.factor),
+         month = as.factor(month)) %>% 
+  drop_na() %>%
+  group_by(name) %>% 
+  mutate(prev_flight_cancelled = if_else(lag(cancelled_flight) == TRUE, TRUE, FALSE)) %>% 
+  drop_na()
+```
+
+```{r}
+n_data <- nrow(flights_model_data_lg_alt_3)
+
+test_index <- sample(1:n_data, size = n_data * 0.2)
+
+test_3 <- flights_model_data_lg_alt_3 %>%  slice(test_index)
+
+train_3 <- flights_model_data_lg_alt_3 %>% slice(-test_index)
+```
+
+```{r}
+lg_model_1 <- glm(cancelled_flight ~ tavg + tmin + tmax + prcp + snow + wspd + pres + wind_dir2, data = train_3, family = binomial(link = 'logit'))
+summary(lg_model_1)
+
+lg_model_2 <- glm(cancelled_flight ~ ., data = train_3, family = binomial(link = 'logit'))
+summary(lg_model_2)
+
+lg_model_3 <- glm(cancelled_flight ~ 1+month+name+time_cat+prcp+wspd+prev_flight_cancelled, data = train_3, family = binomial(link = 'logit'))
+summary(lg_model_3)
+
+
+```
+
+```{r}
+predict_log_1 <- test_3 %>% 
+  add_predictions(lg_model_1, type = "response")
+
+predict_log_2 <- test_3 %>% 
+  add_predictions(lg_model_2, type = "response")
+
+predict_log_3 <- test_3 %>% 
+  add_predictions(lg_model_3, type = "response")
+
+```
+
+```{r}
+roc_obj_1 <- predict_log_1 %>% 
+  roc(response = cancelled_flight,
+      predictor = pred)
+
+roc_obj_2 <- predict_log_2 %>% 
+  roc(response = cancelled_flight,
+      predictor = pred)
+
+roc_obj_3 <- predict_log_3 %>% 
+  roc(response = cancelled_flight,
+      predictor = pred)
+
+
+
+roc_curve <- ggroc(data = list(roc_obj_1, roc_obj_2, roc_obj_3), legacy.axes = TRUE) +
+  coord_fixed() +
+  labs(y = "sensitivity (TRR)",
+       x = "1 - sensititvity(1 -TNR)")
+
+roc_curve
+
+auc(roc_obj_1)
+auc(roc_obj_2)
+auc(roc_obj_3)
+
+```
